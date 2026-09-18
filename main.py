@@ -4,7 +4,7 @@ import logging
 import time
 from datetime import datetime, time as dtime
 import requests
-from flask import Flask, request, render_template_string
+from flask import Flask, render_template_string
 import pandas as pd
 import numpy as np
 import threading
@@ -71,8 +71,30 @@ def fetch_market_data(symbol="RELIANCE.NS"):
         df.dropna(inplace=True)
         return df
     except Exception as e:
-        logging.error(f"Fetch Error: {e}")
+        logging.error(f"Fetch Error ({symbol}): {e}")
         return None
+
+def get_external_market_sentiment():
+    nifty_df = fetch_market_data("^NSEI")
+    vix_df = fetch_market_data("^INDIAVIX")
+    
+    nifty_signal = "NEUTRAL"
+    high_volatility = False
+
+    if nifty_df is not None and len(nifty_df) >= 20:
+        nifty_ema20 = nifty_df['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
+        nifty_close = nifty_df['Close'].iloc[-1]
+        if nifty_close > nifty_ema20:
+            nifty_signal = "BULLISH"
+        elif nifty_close < nifty_ema20:
+            nifty_signal = "BEARISH"
+
+    if vix_df is not None and len(vix_df) > 0:
+        current_vix = vix_df['Close'].iloc[-1]
+        if current_vix > 22.0:
+            high_volatility = True
+
+    return nifty_signal, high_volatility
 
 def calculate_indicators(df):
     df = df.copy()
@@ -96,7 +118,7 @@ def analyze_and_trade(symbol="RELIANCE.NS"):
     trades = load_trade_history()
     now = datetime.now()
     if not (dtime(9, 15) <= now.time() <= dtime(15, 30)):
-        return df_info if 'df_info' in locals() else None
+        return
     today_date = now.strftime("%Y-%m-%d")
     today_trades = [t for t in trades if t.get("date") == today_date]
     if len(today_trades) >= MAX_TRADES_PER_DAY:
@@ -119,90 +141,137 @@ def analyze_and_trade(symbol="RELIANCE.NS"):
         atr = float(latest['ATR']) if not np.isnan(latest['ATR']) else 2.0
         ema20 = float(latest['EMA20'])
 
-        macd_bullish = macd > macd_signal
-        macd_bearish = macd < macd_signal
+        nifty_sentiment, high_volatility = get_external_market_sentiment()
+
+        if high_volatility:
+            return
 
         signal = None
-        if (close > vwap) and (close > ema20) and macd_bullish and (rsi > 50):
-            signal = "BUY"
-        elif (close < vwap) and (close < ema20) and macd_bearish and (rsi < 50):
-            signal = "SELL"
+        if (close > vwap) and (close > ema20) and (macd > macd_signal) and (rsi > 50):
+            if nifty_sentiment == "BULLISH":
+                signal = "BUY"
+        elif (close < vwap) and (close < ema20) and (macd < macd_signal) and (rsi < 50):
+            if nifty_sentiment == "BEARISH":
+                signal = "SELL"
 
         if signal:
             stop_loss = close - (1.0 * atr) if signal == "BUY" else close + (1.0 * atr)
             target = close + (2.5 * atr) if signal == "BUY" else close - (2.5 * atr)
 
-            msg = (f"🚀 [HIGH-FI INTRADAY SIGNAL]\nStock: RELIANCE (NSE)\nSignal: {signal}\nEntry: ₹{close:.2f}\nStop Loss: ₹{stop_loss:.2f}\nTarget: ₹{target:.2f}")
+            msg = (f"🎮 [NEXUS CYBER-SIGNAL]\nStock: RELIANCE (NSE)\nTrend: {nifty_sentiment}\nSignal: {signal}\nEntry: ₹{close:.2f}\nSL: ₹{stop_loss:.2f}\nTarget: ₹{target:.2f}")
             send_telegram(msg)
 
             win_loss = 1 if (signal == "BUY" and close > prev['Close']) or (signal == "SELL" and close < prev['Close']) else 0
             trades.append({"date": today_date, "time": time.strftime("%H:%M:%S"), "price": round(close, 2), "signal": signal, "win_loss": win_loss, "pnl": 500.0 if win_loss == 1 else -200.0})
             save_trade_history(trades)
-        return latest
     except Exception as e:
         logging.error(f"Error: {e}")
-        return None
 
+# 🎮 GAMING CYBERPUNK DASHBOARD HTML
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NEXUS HIGH-FI TERMINAL</title>
+    <title>NEXUS CYBER TERMINAL</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
     <style>
-        body { background-color: #0d1117; color: #c9d1d9; font-family: sans-serif; }
-        .card { background-color: #161b22; border: 1px solid #30363d; margin-bottom: 15px; }
-        .table { color: #c9d1d9; }
-        .badge-buy { background-color: #238636; }
-        .badge-sell { background-color: #da3633; }
+        body {
+            background-color: #050811;
+            color: #00ffcc;
+            font-family: 'Share Tech Mono', monospace;
+            background-image: radial-gradient(circle, #0d1b2a 10%, #050811 90%);
+        }
+        h1, h2, h4, h5 {
+            font-family: 'Orbitron', sans-serif;
+            text-shadow: 0 0 10px #00ffcc, 0 0 20px #00ffcc;
+        }
+        .card-cyber {
+            background: rgba(13, 27, 42, 0.85);
+            border: 1px solid #00ffcc;
+            box-shadow: 0 0 15px rgba(0, 255, 204, 0.2);
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        .neon-box {
+            border-left: 4px solid #ff0055;
+        }
+        .table-cyber {
+            color: #00ffcc;
+            background-color: transparent;
+        }
+        .table-cyber th {
+            border-bottom: 2px solid #00ffcc;
+            color: #ff0055;
+            font-family: 'Orbitron', sans-serif;
+        }
+        .badge-buy {
+            background-color: #00ffcc;
+            color: #000;
+            font-weight: bold;
+            box-shadow: 0 0 10px #00ffcc;
+        }
+        .badge-sell {
+            background-color: #ff0055;
+            color: #fff;
+            font-weight: bold;
+            box-shadow: 0 0 10px #ff0055;
+        }
+        .glow-text {
+            animation: pulse 2s infinite alternate;
+        }
+        @keyframes pulse {
+            0% { opacity: 0.7; }
+            100% { opacity: 1; text-shadow: 0 0 15px #00ffcc; }
+        }
     </style>
 </head>
 <body>
     <div class="container py-4">
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h2>🚀 NEXUS HIGH-FI DASHBOARD</h2>
-            <span class="badge bg-primary fs-6">Mode: {{ trade_mode }}</span>
+        <div class="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom border-info">
+            <h2 class="glow-text">⚡ NEXUS CYBER TERMINAL</h2>
+            <span class="badge badge-buy p-2">MODE: {{ trade_mode }}</span>
         </div>
         
         <div class="row">
             <div class="col-md-3">
-                <div class="card p-3">
-                    <small text-muted>STOCK</small>
-                    <h4>RELIANCE.NS</h4>
+                <div class="card card-cyber p-3">
+                    <small class="text-secondary">TARGET ASSET</small>
+                    <h4 class="text-white">RELIANCE.NS</h4>
                 </div>
             </div>
             <div class="col-md-3">
-                <div class="card p-3">
-                    <small text-muted>STATUS</small>
-                    <h4 class="text-success">24/7 ACTIVE</h4>
+                <div class="card card-cyber p-3 neon-box">
+                    <small class="text-secondary">SYSTEM STATUS</small>
+                    <h4 class="text-success">24/7 ONLINE</h4>
                 </div>
             </div>
             <div class="col-md-3">
-                <div class="card p-3">
-                    <small text-muted>MAX TRADES/DAY</small>
-                    <h4>{{ max_trades }}</h4>
+                <div class="card card-cyber p-3">
+                    <small class="text-secondary">DAILY TRADES LIMIT</small>
+                    <h4 class="text-warning">{{ max_trades }} MAX</h4>
                 </div>
             </div>
             <div class="col-md-3">
-                <div class="card p-3">
-                    <small text-muted>TOTAL LOGGED TRADES</small>
-                    <h4>{{ total_trades }}</h4>
+                <div class="card card-cyber p-3">
+                    <small class="text-secondary">LOGGED TRADES</small>
+                    <h4 class="text-info">{{ total_trades }}</h4>
                 </div>
             </div>
         </div>
 
-        <div class="card p-3 mt-3">
-            <h5>Trade History Logs</h5>
-            <table class="table table-dark table-striped mt-2">
+        <div class="card card-cyber p-4 mt-3">
+            <h5 class="mb-3 text-warning">🎮 EXECUTED TRADE LOGS</h5>
+            <table class="table table-cyber table-hover">
                 <thead>
                     <tr>
-                        <th>Date</th>
-                        <th>Time</th>
-                        <th>Signal</th>
-                        <th>Price</th>
-                        <th>P&L (Est.)</th>
+                        <th>DATE</th>
+                        <th>TIME</th>
+                        <th>SIGNAL</th>
+                        <th>PRICE</th>
+                        <th>EST. P&L</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -220,7 +289,7 @@ HTML_TEMPLATE = """
                     </tr>
                     {% else %}
                     <tr>
-                        <td colspan="5" class="text-center text-muted">No trades executed today yet.</td>
+                        <td colspan="5" class="text-center text-muted">SYSTEM INITIALIZED. WAITING FOR MARKET HOURS...</td>
                     </tr>
                     {% endfor %}
                 </tbody>
