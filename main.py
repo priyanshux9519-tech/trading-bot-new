@@ -4,7 +4,7 @@ import logging
 import time
 from datetime import datetime, time as dtime
 import requests
-from flask import Flask, request
+from flask import Flask, request, render_template_string
 import pandas as pd
 import numpy as np
 import threading
@@ -22,7 +22,7 @@ MAX_TRADES_PER_DAY = 2
 # 🔄 24/7 SELF-PING SYSTEM
 def keep_alive():
     time.sleep(15)
-    SERVER_URL = os.getenv("SERVER_URL", "https://trading-bot-new.onrender.com")
+    SERVER_URL = os.getenv("SERVER_URL", "https://trading-bot-new-oxf5.onrender.com")
     while True:
         try:
             res = requests.get(SERVER_URL, timeout=10)
@@ -96,7 +96,7 @@ def analyze_and_trade(symbol="RELIANCE.NS"):
     trades = load_trade_history()
     now = datetime.now()
     if not (dtime(9, 15) <= now.time() <= dtime(15, 30)):
-        return
+        return df_info if 'df_info' in locals() else None
     today_date = now.strftime("%Y-%m-%d")
     today_trades = [t for t in trades if t.get("date") == today_date]
     if len(today_trades) >= MAX_TRADES_PER_DAY:
@@ -138,13 +138,110 @@ def analyze_and_trade(symbol="RELIANCE.NS"):
             win_loss = 1 if (signal == "BUY" and close > prev['Close']) or (signal == "SELL" and close < prev['Close']) else 0
             trades.append({"date": today_date, "time": time.strftime("%H:%M:%S"), "price": round(close, 2), "signal": signal, "win_loss": win_loss, "pnl": 500.0 if win_loss == 1 else -200.0})
             save_trade_history(trades)
+        return latest
     except Exception as e:
         logging.error(f"Error: {e}")
+        return None
+
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEXUS HIGH-FI TERMINAL</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #0d1117; color: #c9d1d9; font-family: sans-serif; }
+        .card { background-color: #161b22; border: 1px solid #30363d; margin-bottom: 15px; }
+        .table { color: #c9d1d9; }
+        .badge-buy { background-color: #238636; }
+        .badge-sell { background-color: #da3633; }
+    </style>
+</head>
+<body>
+    <div class="container py-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2>🚀 NEXUS HIGH-FI DASHBOARD</h2>
+            <span class="badge bg-primary fs-6">Mode: {{ trade_mode }}</span>
+        </div>
+        
+        <div class="row">
+            <div class="col-md-3">
+                <div class="card p-3">
+                    <small text-muted>STOCK</small>
+                    <h4>RELIANCE.NS</h4>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card p-3">
+                    <small text-muted>STATUS</small>
+                    <h4 class="text-success">24/7 ACTIVE</h4>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card p-3">
+                    <small text-muted>MAX TRADES/DAY</small>
+                    <h4>{{ max_trades }}</h4>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card p-3">
+                    <small text-muted>TOTAL LOGGED TRADES</small>
+                    <h4>{{ total_trades }}</h4>
+                </div>
+            </div>
+        </div>
+
+        <div class="card p-3 mt-3">
+            <h5>Trade History Logs</h5>
+            <table class="table table-dark table-striped mt-2">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Time</th>
+                        <th>Signal</th>
+                        <th>Price</th>
+                        <th>P&L (Est.)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for trade in trades %}
+                    <tr>
+                        <td>{{ trade.date }}</td>
+                        <td>{{ trade.time }}</td>
+                        <td>
+                            <span class="badge {{ 'badge-buy' if trade.signal == 'BUY' else 'badge-sell' }}">
+                                {{ trade.signal }}
+                            </span>
+                        </td>
+                        <td>₹{{ trade.price }}</td>
+                        <td class="{{ 'text-success' if trade.pnl > 0 else 'text-danger' }}">₹{{ trade.pnl }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="5" class="text-center text-muted">No trades executed today yet.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>
+"""
 
 @app.route('/', methods=['GET', 'HEAD'])
 def home():
     analyze_and_trade()
-    return "NEXUS HIGH-FI TERMINAL IS LIVE", 200
+    trades = load_trade_history()
+    return render_template_string(
+        HTML_TEMPLATE, 
+        trades=trades, 
+        total_trades=len(trades), 
+        max_trades=MAX_TRADES_PER_DAY,
+        trade_mode=TRADE_MODE
+    ), 200
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
