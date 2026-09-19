@@ -25,12 +25,12 @@ MAX_TRADES_PER_DAY = 2  # Hard Limit: Exact 2 Trades Per Day
 def keep_alive():
     """
     यह फंक्शन सर्वर को इनएक्टिविटी स्लीप से बचाने के लिए 
-    हर 3 मिनट (180 सेकंड) में खुद की URL पर रिक्वेस्ट भेजता है।
+    हर 2 मिनट (120 सेकंड) में अपने ही यूआरएल पर रिक्वेस्ट भेजता है।
     """
     time.sleep(15)  # App स्टार्ट होने के 15 सेकंड बाद पिंग शुरू होगा
     
-    # अपनी Render की URL सुनिश्चित करें
-    SERVER_URL = "https://trading-botz-1.onrender.com"
+    # Environment Variable से Render URL उठाएगा
+    SERVER_URL = os.getenv("SERVER_URL", "https://trading-bot-new-oxf5.onrender.com")
     
     while True:
         try:
@@ -39,7 +39,7 @@ def keep_alive():
         except Exception as e:
             logging.error(f"Self-Ping Error: {e}")
             
-        time.sleep(180)  # हर 3 मिनट में पिंग करेगा
+        time.sleep(120)  # हर 2 मिनट में पिंग करेगा ताकि कभी बंद न हो
 
 # बैकग्राउंड थ्रेड में Self-Ping चालू करें
 threading.Thread(target=keep_alive, daemon=True).start()
@@ -223,6 +223,31 @@ def analyze_and_trade(symbol="RELIANCE.NS"):
 
     except Exception as e:
         logging.error(f"Strategy Processing Error: {e}")
+
+# ==========================================
+# ⏰ TIME-PINNED AUTOMATION SCHEDULER
+# ==========================================
+def market_scheduler():
+    """
+    मार्केट आवर्स (09:15 से 15:30) में हर 5 मिनट पर बिना मिस किए 
+    ऑटोमैटिक मार्केट स्कैन करने के लिए टाइम-पिनिंग लॉजिक।
+    """
+    time.sleep(10)
+    while True:
+        try:
+            now = datetime.now()
+            market_start = dtime(9, 15)
+            market_end = dtime(15, 30)
+            
+            if market_start <= now.time() <= market_end:
+                analyze_and_trade()
+        except Exception as e:
+            logging.error(f"Scheduler Error: {e}")
+            
+        time.sleep(300) # हर 5 मिनट (300 सेकंड) में ऑटो-स्कैन
+
+# टाइम-पिन शेड्यूलर थ्रेड चालू करें
+threading.Thread(target=market_scheduler, daemon=True).start()
 
 # ==========================================
 # 🖥️ FLASK WEB TERMINAL ROUTE
