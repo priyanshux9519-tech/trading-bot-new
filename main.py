@@ -8,25 +8,54 @@ from flask import Flask, request
 import pandas as pd
 import numpy as np
 import threading
+import pyotp
+from SmartApi import SmartConnect
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
+# Secrets & Configs
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 LOG_FILE = "trade_history.json"
 TRADE_MODE = os.getenv("TRADE_MODE", "PAPER")  
-STARTING_BALANCE = 10000.0  
-MAX_TRADES_PER_DAY = 2  
+SERVER_URL = os.getenv("SERVER_URL", "https://trading-bot-new-oxf5.onrender.com")
 
-# 🔄 INTERNAL SELF-PING SYSTEM (24/7 UPTIME)
+# Angel One Credentials
+ANGEL_API_KEY = os.getenv("ANGEL_API_KEY")
+ANGEL_CLIENT_ID = os.getenv("ANGEL_CLIENT_ID")
+ANGEL_PIN = os.getenv("ANGEL_PIN")
+ANGEL_TOTP_KEY = os.getenv("ANGEL_TOTP_KEY")
+
+# ₹500 Capital Risk & Money Management Rules
+CAPITAL = 500.0
+MAX_TRADES_PER_DAY = 2
+RISK_PER_TRADE = 60.0    # Max ₹60 loss per trade
+REWARD_PER_TRADE = 150.0  # Max ₹150 profit per trade
+
+smartApi = None
+
+def init_angel_one():
+    global smartApi
+    if ANGEL_API_KEY and ANGEL_CLIENT_ID and ANGEL_PIN and ANGEL_TOTP_KEY:
+        try:
+            smartApi = SmartConnect(api_key=ANGEL_API_KEY)
+            totp = pyotp.TOTP(ANGEL_TOTP_KEY).now()
+            data = smartApi.generateSession(ANGEL_CLIENT_ID, ANGEL_PIN, totp)
+            if data['status']:
+                logging.info("Angel One SmartAPI Login Successful!")
+            else:
+                logging.error(f"Angel One Login Failed: {data['message']}")
+        except Exception as e:
+            logging.error(f"Angel One Connection Error: {e}")
+
+# 🔄 24/7 Internal Self-Ping
 def keep_alive():
     time.sleep(15)
-    SERVER_URL = os.getenv("SERVER_URL", "https://trading-bot-new-oxf5.onrender.com")
     while True:
         try:
             res = requests.get(SERVER_URL, timeout=10)
-            logging.info(f"Self-Ping Status: {res.status_code} | Server Active")
+            logging.info(f"Self-Ping Status: {res.status_code}")
         except Exception as e:
             logging.error(f"Self-Ping Error: {e}")
         time.sleep(120)
@@ -53,6 +82,43 @@ def load_trade_history():
 def save_trade_history(trades):
     with open(LOG_FILE, "w") as f:
         json.dump({"trades": trades}, f, indent=2)
+
+# Dynamic Position Sizing for ₹500 Capital (MIS 5x Margin)
+def calculate_quantity(current_price):
+    max_buying_power = CAPITAL * 5.0 # ₹2,500 max limit
+    qty_by_margin = int(max_buying_power // current_price)
+    return max(1, min(qty_by_margin, 2)) # Capped at 1-2 shares to maintain ₹60 max risk
+
+# Execute Angel One Real Order
+def execute_angel_order(symbol, signal_type, quantity):
+    if TRADE_MODE != "REAL":
+        return "PAPER_SUCCESS"
+    
+    init_angel_one() # Ensure session active
+    if not smartApi:
+        send_telegram("⚠️ Angel One Connection Failed! Check Credentials.")
+        return None
+
+    try:
+        orderparams = {
+            "variety": "NORMAL",
+            "tradingsymbol": "RELIANCE-EQ",
+            "symboltoken": "2885", # Reliance NSE Token
+            "transactiontype": "BUY" if signal_type == "BUY" else "SELL",
+            "exchange": "NSE",
+            "ordertype": "MARKET",
+            "producttype": "INTRADAY",
+            "duration": "DAY",
+            "price": "0",
+            "quantity": str(quantity)
+        }
+        order_id = smartApi.placeOrder(orderparams)
+        logging.info(f"Angel One Order Executed ID: {order_id}")
+        return order_id
+    except Exception as e:
+        logging.error(f"Angel One Execution Error: {e}")
+        send_telegram(f"⚠️ Angel One Order Error: {e}")
+        return None
 
 def fetch_market_data(symbol="RELIANCE.NS"):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=2d&interval=5m"
@@ -96,11 +162,8 @@ def analyze_and_trade(symbol="RELIANCE.NS"):
     trades = load_trade_history()
     now = datetime.now()
     
-    # 🛑 9:30 AM FILTER: Opening Noise Avoidance
-    market_start = dtime(9, 30)
-    market_end = dtime(15, 15)
-
-    if not (market_start <= now.time() <= market_end):
+    # 🛑 9:30 AM Noise Filter
+    if not (dtime(9, 30) <= now.time() <= dtime(15, 15)):
         return
 
     today_date = now.strftime("%Y-%m-%d")
@@ -126,54 +189,53 @@ def analyze_and_trade(symbol="RELIANCE.NS"):
         atr = float(latest['ATR']) if not np.isnan(latest['ATR']) else 2.0
         ema20 = float(latest['EMA20'])
 
-        macd_bullish = macd > macd_signal
-        macd_bearish = macd < macd_signal
-
         signal = None
-        # Strict Entry Rules
-        if (close > vwap) and (close > ema20) and macd_bullish and (rsi > 52):
+        if (close > vwap) and (close > ema20) and (macd > macd_signal) and (rsi > 52):
             signal = "BUY"
-        elif (close < vwap) and (close < ema20) and macd_bearish and (rsi < 48):
+        elif (close < vwap) and (close < ema20) and (macd < macd_signal) and (rsi < 48):
             signal = "SELL"
 
         if signal:
-            # 🛑 Cool-down Protection: Duplicate trades prevent
+            # 30-Minute Cool-down Gap
             if len(today_trades) > 0:
                 last_trade_time = datetime.strptime(today_trades[-1]['time'], "%H:%M:%S").time()
-                # 30 minute gap between trades
                 if (datetime.combine(datetime.today(), now.time()) - datetime.combine(datetime.today(), last_trade_time)).seconds < 1800:
                     return
 
+            qty = calculate_quantity(close)
             stop_loss = close - (1.0 * atr) if signal == "BUY" else close + (1.0 * atr)
             target = close + (2.5 * atr) if signal == "BUY" else close - (2.5 * atr)
 
-            msg = (f"🚀 [NOISE-FILTERED SIGNAL]\n"
-                   f"Stock: RELIANCE (NSE)\n"
-                   f"Signal: {signal} 🔥\n"
-                   f"Entry Price: ₹{close:.2f}\n"
-                   f"Stop Loss: ₹{stop_loss:.2f}\n"
-                   f"Target: ₹{target:.2f}\n"
-                   f"RSI: {rsi:.1f}")
-            
-            send_telegram(msg)
-            
-            win_loss = 1 if (signal == "BUY" and close > prev['Close']) or (signal == "SELL" and close < prev['Close']) else 0
-            pnl_val = 500.0 if win_loss == 1 else -200.0
+            order_status = execute_angel_order(symbol, signal, qty)
 
-            trades.append({
-                "date": today_date,
-                "time": time.strftime("%H:%M:%S"),
-                "rsi": round(rsi, 1),
-                "atr": round(atr, 2),
-                "win_loss": win_loss,
-                "pnl": round(pnl_val, 2),
-                "price": round(close, 2),
-                "signal": signal
-            })
-            save_trade_history(trades)
+            if order_status:
+                msg = (f"🚀 [ANGEL ONE {TRADE_MODE} EXECUTION]\n"
+                       f"Stock: RELIANCE (NSE)\n"
+                       f"Signal: {signal} 🔥 | Qty: {qty}\n"
+                       f"Price: ₹{close:.2f}\n"
+                       f"SL (Risk ~₹60): ₹{stop_loss:.2f}\n"
+                       f"Target (Profit ~₹150): ₹{target:.2f}")
+                send_telegram(msg)
+
+                win_loss = 1 if (signal == "BUY" and close > prev['Close']) or (signal == "SELL" and close < prev['Close']) else 0
+                pnl_val = REWARD_PER_TRADE if win_loss == 1 else -RISK_PER_TRADE
+
+                trades.append({
+                    "date": today_date,
+                    "time": time.strftime("%H:%M:%S"),
+                    "rsi": round(rsi, 1),
+                    "atr": round(atr, 2),
+                    "qty": qty,
+                    "mode": TRADE_MODE,
+                    "win_loss": win_loss,
+                    "pnl": round(pnl_val, 2),
+                    "price": round(close, 2),
+                    "signal": signal
+                })
+                save_trade_history(trades)
 
     except Exception as e:
-        logging.error(f"Strategy Error: {e}")
+        logging.error(f"Trading Logic Error: {e}")
 
 def market_scheduler():
     time.sleep(10)
@@ -201,142 +263,37 @@ def home():
     wins = sum(1 for t in trades if t.get('win_loss') == 1)
     win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
     total_net_pnl = sum(t.get('pnl', 0) for t in trades)
-    current_wallet = STARTING_BALANCE + total_net_pnl
 
-    html = f"""
+    return f"""
     <!DOCTYPE html>
-    <html lang="hi">
+    <html>
     <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <meta http-equiv="refresh" content="60">
         <title>NEXUS HIGH-FI TERMINAL</title>
-        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-        <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
         <style>
-            :root {{
-                --bg-dark: #090d16;
-                --card-bg: #131924;
-                --accent-cyan: #00f2fe;
-                --text-main: #ffffff;
-                --text-sub: #94a3b8;
-                --border: rgba(255, 255, 255, 0.08);
-                --win-green: #00e676;
-                --loss-red: #ff5252;
-            }}
-            * {{ margin: 0; padding: 0; box-sizing: border-box; font-family: 'Inter', sans-serif; }}
-            body {{ background-color: var(--bg-dark); color: var(--text-main); display: flex; min-height: 100vh; flex-direction: row; }}
-            .sidebar {{ width: 240px; background: #0e131f; border-right: 1px solid var(--border); padding: 24px 16px; shrink: 0; }}
-            .brand {{ font-size: 1.2rem; font-weight: 800; color: var(--accent-cyan); display: flex; gap: 10px; align-items: center; margin-bottom: 30px; }}
-            .main-content {{ flex: 1; padding: 25px; overflow-y: auto; width: 100%; }}
-            .top-bar {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }}
-            .status-badge {{ background: rgba(0, 242, 254, 0.15); color: var(--accent-cyan); padding: 6px 14px; border-radius: 20px; font-size: 0.85rem; font-weight: 600; border: 1px solid var(--accent-cyan); }}
-            .stats-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-bottom: 20px; }}
-            .stat-card {{ background: var(--card-bg); border: 1px solid var(--border); border-radius: 14px; padding: 18px; }}
-            .stat-title {{ color: var(--text-sub); font-size: 0.8rem; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }}
-            .stat-value {{ font-size: 1.5rem; font-weight: 700; }}
-            .win {{ color: var(--win-green); }} .loss {{ color: var(--loss-red); }}
-            .chart-section {{ background: var(--card-bg); border: 1px solid var(--border); border-radius: 14px; padding: 15px; height: 480px; margin-bottom: 20px; }}
-            .table-card {{ background: var(--card-bg); border: 1px solid var(--border); border-radius: 14px; padding: 20px; overflow-x: auto; }}
-            table {{ width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }}
-            th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid var(--border); }}
-            th {{ color: var(--accent-cyan); font-weight: 600; }}
-            @media (max-width: 768px) {{
-                body {{ flex-direction: column; }}
-                .sidebar {{ width: 100%; padding: 15px; border-right: none; border-bottom: 1px solid var(--border); }}
-                .brand {{ margin-bottom: 0; }}
-                .main-content {{ padding: 15px; }}
-                .chart-section {{ height: 350px; }}
-            }}
+            body {{ background: #080b11; color: #00f2fe; font-family: monospace; padding: 20px; }}
+            .card {{ background: #111622; border: 1px solid #1f293d; color: #fff; margin-bottom: 15px; }}
+            .badge-real {{ background: #00e676; color: #000; font-weight: bold; }}
+            .badge-paper {{ background: #ff9100; color: #000; font-weight: bold; }}
         </style>
     </head>
     <body>
-        <aside class="sidebar">
-            <div class="brand"><i class="fa-solid fa-bolt"></i> NEXUS TERMINAL</div>
-        </aside>
-
-        <main class="main-content">
-            <div class="top-bar">
-                <h2>Live High-Fi Terminal (₹200 Risk / ₹500 Profit)</h2>
-                <div class="status-badge"><i class="fa-solid fa-clock"></i> TODAY'S TRADES: {today_count}/2 | 9:30 AM START</div>
+        <div class="container">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h2>⚡ NEXUS TERMINAL (ANGEL ONE SMARTAPI)</h2>
+                <span class="badge { 'badge-real' if TRADE_MODE == 'REAL' else 'badge-paper' } p-2">MODE: {TRADE_MODE}</span>
             </div>
-
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-title">Wallet Balance</div>
-                    <div class="stat-value {"win" if current_wallet >= STARTING_BALANCE else "loss"}">₹{current_wallet:.2f}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-title">Net Realized PnL</div>
-                    <div class="stat-value {"win" if total_net_pnl >= 0 else "loss"}">₹{total_net_pnl:.2f}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-title">Live Win Rate</div>
-                    <div class="stat-value win">{win_rate:.1f}%</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-title">Total Execution</div>
-                    <div class="stat-value" style="color: var(--accent-cyan);">{total_trades}</div>
-                </div>
+            <div class="row">
+                <div class="col-md-3"><div class="card p-3"><h5>CAPITAL</h5><h4>₹{CAPITAL}</h4></div></div>
+                <div class="col-md-3"><div class="card p-3"><h5>NET PNL</h5><h4 class="{ 'text-success' if total_net_pnl >=0 else 'text-danger'}">₹{total_net_pnl:.2f}</h4></div></div>
+                <div class="col-md-3"><div class="card p-3"><h5>WIN RATE</h5><h4>{win_rate:.1f}%</h4></div></div>
+                <div class="col-md-3"><div class="card p-3"><h5>TODAY TRADES</h5><h4>{today_count}/{MAX_TRADES_PER_DAY}</h4></div></div>
             </div>
-
-            <div class="chart-section">
-                <div id="tradingview_chart" style="height: 100%; width: 100%;"></div>
-            </div>
-
-            <div class="table-card">
-                <h3>📊 High-Fi Execution Log</h3>
-                <table>
-                    <tr>
-                        <th>Date & Time</th>
-                        <th>Signal</th>
-                        <th>Price</th>
-                        <th>ATR</th>
-                        <th>Outcome</th>
-                    </tr>
-    """
-    if len(trades) == 0:
-        html += """<tr><td colspan="5" style="text-align:center; color: var(--text-sub);">Scanning VWAP & MACD for setups (9:30 AM to 3:15 PM)...</td></tr>"""
-    else:
-        for t in reversed(trades[-10:]):
-            sig_cls = "win" if t.get('signal') == "BUY" else "loss"
-            res_cls = "win" if t.get('win_loss') == 1 else "loss"
-            pnl_val = t.get('pnl', 0)
-            pnl_str = f"+₹{pnl_val:.2f}" if pnl_val >= 0 else f"-₹{abs(pnl_val):.2f}"
-            trade_time = f"{t.get('date', '')} {t.get('time', '')}"
-            
-            html += f"""
-            <tr>
-                <td>{trade_time}</td>
-                <td class="{sig_cls}"><b>{t.get('signal', 'N/A')}</b></td>
-                <td>₹{t.get('price', 0):.2f}</td>
-                <td>{t.get('atr', 0):.2f}</td>
-                <td class="{res_cls}">{"WIN" if t.get('win_loss') == 1 else "LOSS"} ({pnl_str})</td>
-            </tr>
-            """
-    html += """
-                </table>
-            </div>
-        </main>
-        <script type="text/javascript">
-            new TradingView.widget({
-                "autosize": true,
-                "symbol": "NSE:RELIANCE",
-                "interval": "5",
-                "timezone": "Asia/Kolkata",
-                "theme": "dark",
-                "style": "1",
-                "locale": "in",
-                "toolbar_bg": "#f1f3f6",
-                "enable_publishing": false,
-                "hide_side_toolbar": false,
-                "container_id": "tradingview_chart"
-            });
-        </script>
+        </div>
     </body>
     </html>
-    """
-    return html
+    """, 200
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
