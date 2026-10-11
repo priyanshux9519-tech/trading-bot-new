@@ -1,114 +1,84 @@
 import os
 import requests
-print("RENDER_PUBLIC_IP:", requests.get('https://api.ipify.org').text)
-import yfinance as yf
-import pandas as pd
-from flask import Flask, jsonify, request
-import upstox_client
-from upstox_client.rest import ApiException
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# Environment Variables
-UPSTOX_API_KEY = os.environ.get("UPSTOX_API_KEY")
-UPSTOX_API_SECRET = os.environ.get("UPSTOX_API_SECRET")
-UPSTOX_ACCESS_TOKEN = os.environ.get("UPSTOX_ACCESS_TOKEN")  
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-TRADE_MODE = os.environ.get("TRADE_MODE", "PAPER").upper()
+# --- UPSTOX & BOT CONFIGURATION ---
+UPSTOX_ACCESS_TOKEN = os.getenv("UPSTOX_ACCESS_TOKEN", "")
+CLIENT_ID = "6a6e736c-824b-4d58-adb6-34092ecd371a"
 
-# Strategy Parameters
-CAPITAL = 500.0
-MAX_RISK = 60.0        # Stop Loss Limit (₹)
-TARGET_PROFIT = 150.0  # Target Profit (₹)
-STOCK_SYMBOL = "RELIANCE.NS"
-UPSTOX_INSTRUMENT_KEY = "NSE_EQ|INE002A01018" # Reliance EQ Instrument Key
+# --- FREE PROXY CONFIGURATION ---
+# (अगर आपके पास अपना Static Proxy IP/Port हो तो यहाँ रिप्लेस करें)
+PROXIES = {
+    "http": "http://185.199.229.156:7492",
+    "https": "http://185.199.229.156:7492"
+}
 
-def send_telegram(message):
-    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+# --- OUTBOUND IP CHECK ---
+def get_outbound_ip():
+    try:
+        # प्रॉक्सी के माध्यम से आउटबाउंड IP चेक करना
+        ip = requests.get('https://api.ipify.org', proxies=PROXIES, timeout=5).text
+        print(f"RENDER_PUBLIC_IP (Via Proxy): {ip}")
+        return ip
+    except Exception as e:
+        # अगर प्रॉक्सी फ़ेल हो तो डायरेक्ट IP चेक
         try:
-            requests.post(url, json=payload, timeout=5)
-        except Exception as e:
-            print(f"Telegram Error: {e}")
+            ip = requests.get('https://api.ipify.org', timeout=5).text
+            print(f"RENDER_PUBLIC_IP (Direct): {ip}")
+            return ip
+        except Exception as err:
+            print(f"Could not fetch IP: {err}")
+            return "IP Fetch Error"
 
-def place_upstox_order(transaction_type, quantity, price):
-    if TRADE_MODE != "REAL":
-        print("Paper Trading Mode: Order Execution Skipped")
-        return {"status": "PAPER_SUCCESS"}
+# सर्वर स्टार्ट होते ही IP प्रिंट करें
+get_outbound_ip()
+
+# --- UPSTOX ORDER FUNCTION ---
+def place_upstox_order(instrument_token, quantity, transaction_type, order_type="MARKET", price=0):
+    url = "https://api.upstox.com/v2/order/place"
     
-    if not UPSTOX_ACCESS_TOKEN:
-        print("Upstox Access Token missing!")
-        send_telegram("⚠️ *Upstox Alert*: Access Token is missing for real trading.")
-        return {"status": "TOKEN_MISSING"}
-
-    # Configure Upstox API
-    configuration = upstox_client.Configuration()
-    configuration.access_token = UPSTOX_ACCESS_TOKEN
-    api_instance = upstox_client.OrderApi(upstox_client.ApiClient(configuration))
-
-    order_body = upstox_client.PlaceOrderRequest(
-        quantity=int(quantity),
-        product="I",              # Intraday
-        validity="DAY",
-        price=0.0,                # Market Order
-        tag="nexus_bot",
-        instrument_token=UPSTOX_INSTRUMENT_KEY,
-        order_type="MARKET",
-        transaction_type=transaction_type.upper(), # BUY / SELL
-        disclosed_quantity=0,
-        trigger_price=0.0,
-        is_amo=False
-    )
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {UPSTOX_ACCESS_TOKEN}"
+    }
+    
+    payload = {
+        "quantity": int(quantity),
+        "product": "I",  # Intraday
+        "validity": "DAY",
+        "price": float(price),
+        "tag": "RenderTradingBot",
+        "instrument_token": instrument_token,
+        "order_type": order_type,
+        "transaction_type": transaction_type,
+        "disclosed_quantity": 0,
+        "trigger_price": 0,
+        "is_amo": False
+    }
 
     try:
-        api_response = api_instance.place_order(order_body, api_version='2.0')
-        print(f"Upstox Order Executed: {api_response}")
-        return {"status": "SUCCESS", "response": api_response}
-    except ApiException as e:
-        print(f"Upstox Order Exception: {e}")
-        send_telegram(f"❌ *Upstox Order Failed*: {e.reason}")
-        return {"status": "FAILED", "error": str(e)}
+        # proxies=PROXIES के ज़रिए Upstox को रिक्वेस्ट भेजना
+        response = requests.post(url, json=payload, headers=headers, proxies=PROXIES, timeout=10)
+        res_data = response.json()
+        print("Upstox Response:", res_data)
+        return res_data
+    except Exception as e:
+        print("Order Placement Error:", str(e))
+        return {"status": "error", "message": str(e)}
 
-def analyze_and_trade():
-    print("Fetching live market data for Reliance...")
-    data = yf.download(tickers=STOCK_SYMBOL, period="1d", interval="5m")
-    
-    if data.empty:
-        print("No market data returned.")
-        return "No Data"
-
-    # Fix for yfinance Pandas Series / MultiIndex issue
-    last_close = data['Close'].iloc[-1]
-    close_price = float(last_close.item()) if hasattr(last_close, 'item') else float(last_close)
-    close_price = round(close_price, 2)
-    
-    # Risk Management Calculation
-    sl_price = round(close_price - (MAX_RISK / 2), 2)  
-    target_price = round(close_price + (TARGET_PROFIT / 2), 2)
-    qty = max(1, int(CAPITAL // close_price)) if CAPITAL >= close_price else 1
-
-    msg = (
-        f"📊 *Reliance Intraday Signal*\n"
-        f"• *Current Price*: ₹{close_price}\n"
-        f"• *Quantity*: {qty}\n"
-        f"• *StopLoss*: ₹{sl_price} (-₹{MAX_RISK})\n"
-        f"• *Target*: ₹{target_price} (+₹{TARGET_PROFIT})\n"
-        f"• *Mode*: `{TRADE_MODE}`"
-    )
-    print(msg)
-    send_telegram(msg)
-
-    # Trigger Order Execution
-    res = place_upstox_order("BUY", qty, close_price)
-    return res
-
-@app.route('/', methods=['GET', 'HEAD'])
+# --- FLASK ROUTES ---
+@app.route('/', methods=['GET'])
 def home():
-    res = analyze_and_trade()
-    return f"Nexus Trading Bot Live! Mode: {TRADE_MODE} | Upstox Active | Status: {res}"
+    current_ip = get_outbound_ip()
+    return jsonify({
+        "status": "online",
+        "bot": "Reliance Intraday Bot",
+        "server_ip": current_ip
+    })
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
