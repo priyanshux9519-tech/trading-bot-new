@@ -1,9 +1,6 @@
 flask
-gunicorn
-pandas
-numpy
 requests
-smartapi-python
-pyotp
-logzero
-websocket
+yfinance
+pandas
+ta
+upstox-python
