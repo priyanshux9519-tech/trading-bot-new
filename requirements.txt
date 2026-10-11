@@ -1,5 +1,7 @@
-Flask
+flask
 gunicorn
-requests
 pandas
 numpy
+requests
+smartapi-python
+pytotp
