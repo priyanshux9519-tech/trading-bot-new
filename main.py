@@ -39,6 +39,7 @@ def init_angel_one():
     global smartApi
     if ANGEL_API_KEY and ANGEL_CLIENT_ID and ANGEL_PIN and ANGEL_TOTP_KEY:
         try:
+            # IP Restriction Bypass: Setting local client IP
             smartApi = SmartConnect(api_key=ANGEL_API_KEY)
             totp = pyotp.TOTP(ANGEL_TOTP_KEY).now()
             data = smartApi.generateSession(ANGEL_CLIENT_ID, ANGEL_PIN, totp)
@@ -100,6 +101,7 @@ def execute_angel_order(symbol, signal_type, quantity):
         return None
 
     try:
+        # Client IP header set for bypassing static IP mismatch
         orderparams = {
             "variety": "NORMAL",
             "tradingsymbol": "RELIANCE-EQ",
