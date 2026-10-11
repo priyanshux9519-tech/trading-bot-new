@@ -11,15 +11,15 @@ app = Flask(__name__)
 # Environment Variables
 UPSTOX_API_KEY = os.environ.get("UPSTOX_API_KEY")
 UPSTOX_API_SECRET = os.environ.get("UPSTOX_API_SECRET")
-UPSTOX_ACCESS_TOKEN = os.environ.get("UPSTOX_ACCESS_TOKEN")  # Generated after daily auth
+UPSTOX_ACCESS_TOKEN = os.environ.get("UPSTOX_ACCESS_TOKEN")  
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 TRADE_MODE = os.environ.get("TRADE_MODE", "PAPER").upper()
 
 # Strategy Parameters
 CAPITAL = 500.0
-MAX_RISK = 60.0    # Stop Loss Limit (₹)
-TARGET_PROFIT = 150.0 # Target Profit (₹)
+MAX_RISK = 60.0        # Stop Loss Limit (₹)
+TARGET_PROFIT = 150.0  # Target Profit (₹)
 STOCK_SYMBOL = "RELIANCE.NS"
 UPSTOX_INSTRUMENT_KEY = "NSE_EQ|INE002A01018" # Reliance EQ Instrument Key
 
@@ -78,11 +78,13 @@ def analyze_and_trade():
         print("No market data returned.")
         return "No Data"
 
-    close_price = float(data['Close'].iloc[-1])
+    # Fix for yfinance Pandas Series / MultiIndex issue
+    last_close = data['Close'].iloc[-1]
+    close_price = float(last_close.item()) if hasattr(last_close, 'item') else float(last_close)
+    close_price = round(close_price, 2)
     
     # Risk Management Calculation
-    # Max Loss ₹60, Max Profit ₹150 for ₹500 allocation
-    sl_price = round(close_price - (MAX_RISK / 2), 2)  # 2 shares approx
+    sl_price = round(close_price - (MAX_RISK / 2), 2)  
     target_price = round(close_price + (TARGET_PROFIT / 2), 2)
     qty = max(1, int(CAPITAL // close_price)) if CAPITAL >= close_price else 1
 
