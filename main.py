@@ -1,5 +1,6 @@
 import os
 import requests
+print("RENDER_PUBLIC_IP:", requests.get('https://api.ipify.org').text)
 import yfinance as yf
 import pandas as pd
 from flask import Flask, jsonify, request
