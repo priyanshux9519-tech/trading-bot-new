@@ -24,29 +24,6 @@ MAX_TRADES_PER_DAY = 2
 STOCK_SYMBOL = "RELIANCE.NS"
 UPSTOX_INSTRUMENT_KEY = "NSE_EQ|INE002A01018"
 
-# --- FREE PROXY CONFIGURATION (Upstox Static IP Bypass) ---
-PROXIES = {
-    "http": "http://185.199.229.156:7492",
-    "https": "http://185.199.229.156:7492"
-}
-
-# --- OUTBOUND IP CHECK ---
-def get_outbound_ip():
-    try:
-        ip = requests.get('https://api.ipify.org', proxies=PROXIES, timeout=5).text
-        logging.info(f"RENDER_PUBLIC_IP (Via Proxy): {ip}")
-        return ip
-    except Exception as e:
-        try:
-            ip = requests.get('https://api.ipify.org', timeout=5).text
-            logging.info(f"RENDER_PUBLIC_IP (Direct): {ip}")
-            return ip
-        except Exception as err:
-            logging.error(f"Could not fetch IP: {err}")
-            return "IP Fetch Error"
-
-get_outbound_ip()
-
 # 🔄 INTERNAL SELF-PING SYSTEM (24/7 UPTIME)
 def keep_alive():
     time.sleep(15)
@@ -123,7 +100,8 @@ def fetch_market_data(symbol="RELIANCE.NS"):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=2d&interval=5m"
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        response = requests.get(url, headers=headers, proxies=PROXIES, timeout=10)
+        # यहाँ से प्रॉक्सी हटा दी गई है क्योंकि Yahoo Finance डायरेक्ट काम करता है
+        response = requests.get(url, headers=headers, timeout=10)
         data = response.json()
         result = data['chart']['result'][0]
         timestamps = result['timestamp']
