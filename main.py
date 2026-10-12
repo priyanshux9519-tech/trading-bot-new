@@ -218,11 +218,10 @@ def analyze_and_trade(symbol="RELIANCE.NS"):
                    f"RSI: {rsi:.1f}")
             
             send_telegram(msg)
-            
             order_res = place_upstox_order(signal, qty, close)
 
             win_loss = 1 if (signal == "BUY" and close > prev['Close']) or (signal == "SELL" and close < prev['Close']) else 0
-            pnl_val = 50.0 if win_loss == 1 else -30.0  # Controlled risk to preserve ₹500 across 3+ days
+            pnl_val = 50.0 if win_loss == 1 else -30.0
 
             trades.append({
                 "date": today_date,
@@ -266,6 +265,9 @@ def home():
     win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
     total_net_pnl = sum(t.get('pnl', 0) for t in trades)
     current_wallet = STARTING_BALANCE + total_net_pnl
+
+    wallet_class = "win" if current_wallet >= STARTING_BALANCE else "loss"
+    pnl_class = "win" if total_net_pnl >= 0 else "loss"
 
     html = f"""
     <!DOCTYPE html>
@@ -328,12 +330,80 @@ def home():
             <div class="stats-grid">
                 <div class="stat-card">
                     <div class="stat-title">Wallet Balance</div>
-                    <div class="stat-value {"win" if current_wallet >= STARTING_BALANCE else "loss"}">₹{current_wallet:.2f}</div>
+                    <div class="stat-value {wallet_class}">₹{current_wallet:.2f}</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-title">Net Realized PnL</div>
-                    <div class="stat-value {"win" if total_net_pnl >= 0 else "loss"}">₹{total_net_pnl:.2f}</div>
+                    <div class="stat-value {pnl_class}">₹{total_net_pnl:.2f}</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-title">Live Win Rate</div>
-                    <div class="stat-value win">{win_rate:.1
+                    <div class="stat-value win">{win_rate:.1f}%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-title">Total Execution</div>
+                    <div class="stat-value" style="color: var(--accent-cyan);">{total_trades}</div>
+                </div>
+            </div>
+
+            <div class="chart-section">
+                <div id="tradingview_chart" style="height: 100%; width: 100%;"></div>
+            </div>
+
+            <div class="table-card">
+                <h3>📊 High-Fi Execution Log</h3>
+                <table>
+                    <tr>
+                        <th>Date & Time</th>
+                        <th>Signal</th>
+                        <th>Price</th>
+                        <th>ATR</th>
+                        <th>Outcome</th>
+                    </tr>
+    """
+    if len(trades) == 0:
+        html += """<tr><td colspan="5" style="text-align:center; color: var(--text-sub);">Scanning VWAP & MACD for setups (9:30 AM to 3:15 PM)...</td></tr>"""
+    else:
+        for t in reversed(trades[-10:]):
+            sig_cls = "win" if t.get('signal') == "BUY" else "loss"
+            res_cls = "win" if t.get('win_loss') == 1 else "loss"
+            pnl_val = t.get('pnl', 0)
+            pnl_str = f"+₹{pnl_val:.2f}" if pnl_val >= 0 else f"-₹{abs(pnl_val):.2f}"
+            trade_time = f"{t.get('date', '')} {t.get('time', '')}"
+            
+            html += f"""
+            <tr>
+                <td>{trade_time}</td>
+                <td class="{sig_cls}"><b>{t.get('signal', 'N/A')}</b></td>
+                <td>₹{t.get('price', 0):.2f}</td>
+                <td>{t.get('atr', 0):.2f}</td>
+                <td class="{res_cls}">{"WIN" if t.get('win_loss') == 1 else "LOSS"} ({pnl_str})</td>
+            </tr>
+            """
+    html += """
+                </table>
+            </div>
+        </main>
+        <script type="text/javascript">
+            new TradingView.widget({
+                "autosize": true,
+                "symbol": "NSE:RELIANCE",
+                "interval": "5",
+                "timezone": "Asia/Kolkata",
+                "theme": "dark",
+                "style": "1",
+                "locale": "in",
+                "toolbar_bg": "#f1f3f6",
+                "enable_publishing": false,
+                "hide_side_toolbar": false,
+                "container_id": "tradingview_chart"
+            });
+        </script>
+    </body>
+    </html>
+    """
+    return html
+
+if __name__ == "__main__":
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host="0.0.0.0", port=port)
