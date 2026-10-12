@@ -1,29 +1,42 @@
 import os
+import time
+import threading
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify
 
 app = Flask(__name__)
 
 # --- UPSTOX & BOT CONFIGURATION ---
 UPSTOX_ACCESS_TOKEN = os.getenv("UPSTOX_ACCESS_TOKEN", "")
 CLIENT_ID = "6a6e736c-824b-4d58-adb6-34092ecd371a"
+APP_URL = "https://trading-bot-new-oxf5.onrender.com"
 
 # --- FREE PROXY CONFIGURATION ---
-# (अगर आपके पास अपना Static Proxy IP/Port हो तो यहाँ रिप्लेस करें)
 PROXIES = {
     "http": "http://185.199.229.156:7492",
     "https": "http://185.199.229.156:7492"
 }
 
+# --- SELF PING FUNCTION (EVERY 2.5 MINUTES) ---
+def self_ping():
+    while True:
+        time.sleep(150)  # 2.5 मिनट (150 सेकंड)
+        try:
+            res = requests.get(APP_URL, timeout=10)
+            print(f"Self-ping success: Status {res.status_code}")
+        except Exception as e:
+            print(f"Self-ping failed: {e}")
+
+# बैकग्राउंड थ्रेड स्टार्ट करें
+threading.Thread(target=self_ping, daemon=True).start()
+
 # --- OUTBOUND IP CHECK ---
 def get_outbound_ip():
     try:
-        # प्रॉक्सी के माध्यम से आउटबाउंड IP चेक करना
         ip = requests.get('https://api.ipify.org', proxies=PROXIES, timeout=5).text
         print(f"RENDER_PUBLIC_IP (Via Proxy): {ip}")
         return ip
     except Exception as e:
-        # अगर प्रॉक्सी फ़ेल हो तो डायरेक्ट IP चेक
         try:
             ip = requests.get('https://api.ipify.org', timeout=5).text
             print(f"RENDER_PUBLIC_IP (Direct): {ip}")
@@ -60,7 +73,6 @@ def place_upstox_order(instrument_token, quantity, transaction_type, order_type=
     }
 
     try:
-        # proxies=PROXIES के ज़रिए Upstox को रिक्वेस्ट भेजना
         response = requests.post(url, json=payload, headers=headers, proxies=PROXIES, timeout=10)
         res_data = response.json()
         print("Upstox Response:", res_data)
