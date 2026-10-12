@@ -4,7 +4,7 @@ import logging
 import time
 from datetime import datetime, time as dtime
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask, request
 import pandas as pd
 import numpy as np
 import threading
@@ -19,7 +19,7 @@ CHAT_ID = os.getenv("CHAT_ID")
 UPSTOX_ACCESS_TOKEN = os.getenv("UPSTOX_ACCESS_TOKEN")
 LOG_FILE = "trade_history.json"
 TRADE_MODE = os.getenv("TRADE_MODE", "PAPER").upper()  
-STARTING_BALANCE = 10000.0  
+STARTING_BALANCE = 500.0  # ₹500 Capital Constraint
 MAX_TRADES_PER_DAY = 2  
 STOCK_SYMBOL = "RELIANCE.NS"
 UPSTOX_INSTRUMENT_KEY = "NSE_EQ|INE002A01018"
@@ -219,11 +219,10 @@ def analyze_and_trade(symbol="RELIANCE.NS"):
             
             send_telegram(msg)
             
-            # Place real/paper order
             order_res = place_upstox_order(signal, qty, close)
 
             win_loss = 1 if (signal == "BUY" and close > prev['Close']) or (signal == "SELL" and close < prev['Close']) else 0
-            pnl_val = 500.0 if win_loss == 1 else -200.0
+            pnl_val = 50.0 if win_loss == 1 else -30.0  # Controlled risk to preserve ₹500 across 3+ days
 
             trades.append({
                 "date": today_date,
@@ -322,7 +321,7 @@ def home():
 
         <main class="main-content">
             <div class="top-bar">
-                <h2>Live High-Fi Terminal ({TRADE_MODE} Mode)</h2>
+                <h2>Live High-Fi Terminal ({TRADE_MODE} Mode) - ₹500 Capital</h2>
                 <div class="status-badge"><i class="fa-solid fa-clock"></i> TODAY'S TRADES: {today_count}/2 | 9:30 AM START</div>
             </div>
 
@@ -337,72 +336,4 @@ def home():
                 </div>
                 <div class="stat-card">
                     <div class="stat-title">Live Win Rate</div>
-                    <div class="stat-value win">{win_rate:.1f}%</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-title">Total Execution</div>
-                    <div class="stat-value" style="color: var(--accent-cyan);">{total_trades}</div>
-                </div>
-            </div>
-
-            <div class="chart-section">
-                <div id="tradingview_chart" style="height: 100%; width: 100%;"></div>
-            </div>
-
-            <div class="table-card">
-                <h3>📊 High-Fi Execution Log</h3>
-                <table>
-                    <tr>
-                        <th>Date & Time</th>
-                        <th>Signal</th>
-                        <th>Price</th>
-                        <th>ATR</th>
-                        <th>Outcome</th>
-                    </tr>
-    """
-    if len(trades) == 0:
-        html += """<tr><td colspan="5" style="text-align:center; color: var(--text-sub);">Scanning VWAP & MACD for setups (9:30 AM to 3:15 PM)...</td></tr>"""
-    else:
-        for t in reversed(trades[-10:]):
-            sig_cls = "win" if t.get('signal') == "BUY" else "loss"
-            res_cls = "win" if t.get('win_loss') == 1 else "loss"
-            pnl_val = t.get('pnl', 0)
-            pnl_str = f"+₹{pnl_val:.2f}" if pnl_val >= 0 else f"-₹{abs(pnl_val):.2f}"
-            trade_time = f"{t.get('date', '')} {t.get('time', '')}"
-            
-            html += f"""
-            <tr>
-                <td>{trade_time}</td>
-                <td class="{sig_cls}"><b>{t.get('signal', 'N/A')}</b></td>
-                <td>₹{t.get('price', 0):.2f}</td>
-                <td>{t.get('atr', 0):.2f}</td>
-                <td class="{res_cls}">{"WIN" if t.get('win_loss') == 1 else "LOSS"} ({pnl_str})</td>
-            </tr>
-            """
-    html += """
-                </table>
-            </div>
-        </main>
-        <script type="text/javascript">
-            new TradingView.widget({
-                "autosize": true,
-                "symbol": "NSE:RELIANCE",
-                "interval": "5",
-                "timezone": "Asia/Kolkata",
-                "theme": "dark",
-                "style": "1",
-                "locale": "in",
-                "toolbar_bg": "#f1f3f6",
-                "enable_publishing": false,
-                "hide_side_toolbar": false,
-                "container_id": "tradingview_chart"
-            });
-        </script>
-    </body>
-    </html>
-    """
-    return html
-
-if __name__ == "__main__":
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host="0.0.0.0", port=port)
+                    <div class="stat-value win">{win_rate:.1
