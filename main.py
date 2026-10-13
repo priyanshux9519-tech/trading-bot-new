@@ -4,7 +4,7 @@ import logging
 import time
 from datetime import datetime, time as dtime
 import requests
-from flask import Flask, request
+from flask import Flask, request, redirect
 import pandas as pd
 import numpy as np
 import threading
@@ -16,18 +16,21 @@ logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+UPSTOX_API_KEY = os.getenv("UPSTOX_API_KEY", "1rynwakgli")
+UPSTOX_API_SECRET = os.getenv("UPSTOX_API_SECRET")
 UPSTOX_ACCESS_TOKEN = os.getenv("UPSTOX_ACCESS_TOKEN")
+
 LOG_FILE = "trade_history.json"
-TRADE_MODE = os.getenv("TRADE_MODE", "PAPER").upper()  
-STARTING_BALANCE = 500.0  # ₹500 Capital Constraint
+TRADE_MODE = os.getenv("TRADE_MODE", "REAL").upper()  
+STARTING_BALANCE = 500.0  
 MAX_TRADES_PER_DAY = 2  
 STOCK_SYMBOL = "RELIANCE.NS"
 UPSTOX_INSTRUMENT_KEY = "NSE_EQ|INE002A01018"
+SERVER_URL = "https://trading-bot-new-oxf5.onrender.com"
 
-# 🔄 INTERNAL SELF-PING SYSTEM (24/7 UPTIME)
+# 🔄 INTERNAL SELF-PING SYSTEM
 def keep_alive():
     time.sleep(15)
-    SERVER_URL = os.getenv("SERVER_URL", "https://trading-bot-new-oxf5.onrender.com")
     while True:
         try:
             res = requests.get(SERVER_URL, timeout=10)
@@ -45,6 +48,44 @@ def send_telegram(message):
             requests.post(url, json={"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}, timeout=5)
         except Exception as e:
             logging.error(f"Telegram Error: {e}")
+
+# 🔐 UPSTOX AUTHENTICATION ROUTES (Render IP Binding Solution)
+@app.route('/login')
+def upstox_login():
+    redirect_uri = f"{SERVER_URL}/upstox-callback"
+    auth_url = f"https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id={UPSTOX_API_KEY}&redirect_uri={redirect_uri}"
+    return redirect(auth_url)
+
+@app.route('/upstox-callback')
+def upstox_callback():
+    code = request.args.get('code')
+    if not code:
+        return "Authorization Code missing!", 400
+    
+    # Render server directly exchanges the code for Token using its own IP
+    url = 'https://api.upstox.com/v2/login/authorization/token'
+    headers = {'accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded'}
+    data = {
+        'code': code,
+        'client_id': UPSTOX_API_KEY,
+        'client_secret': UPSTOX_API_SECRET,
+        'redirect_uri': f"{SERVER_URL}/upstox-callback",
+        'grant_type': 'authorization_code'
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, data=data, timeout=10)
+        res_data = response.json()
+        if 'access_token' in res_data:
+            token = res_data['access_token']
+            global UPSTOX_ACCESS_TOKEN
+            UPSTOX_ACCESS_TOKEN = token
+            send_telegram(f"✅ *Upstox Login Successful!*\nNew Token bound to Render IP.\n\n`{token}`")
+            return f"<h2>✅ Upstox Login Successful!</h2><p>New Access Token has been generated via Render Server IP and sent to Telegram.</p><p>Token: {token}</p>"
+        else:
+            return f"❌ Token Generation Failed: {res_data}", 400
+    except Exception as e:
+        return f"Error: {e}", 500
 
 def place_upstox_order(transaction_type, quantity, price):
     if TRADE_MODE != "REAL":
@@ -100,7 +141,6 @@ def fetch_market_data(symbol="RELIANCE.NS"):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=2d&interval=5m"
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        # यहाँ से प्रॉक्सी हटा दी गई है क्योंकि Yahoo Finance डायरेक्ट काम करता है
         response = requests.get(url, headers=headers, timeout=10)
         data = response.json()
         result = data['chart']['result'][0]
@@ -187,7 +227,7 @@ def analyze_and_trade(symbol="RELIANCE.NS"):
             target = close + (2.5 * atr) if signal == "BUY" else close - (2.5 * atr)
             qty = max(1, int(500.0 // close)) if 500.0 >= close else 1
 
-            msg = (f"🚀 [NOISE-FILTERED SIGNAL]\n"
+            msg = (f"🚀 [REAL TRADE SIGNAL]\n"
                    f"Stock: RELIANCE (NSE)\n"
                    f"Signal: {signal} 🔥\n"
                    f"Entry Price: ₹{close:.2f}\n"
@@ -285,6 +325,7 @@ def home():
             table {{ width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }}
             th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid var(--border); }}
             th {{ color: var(--accent-cyan); font-weight: 600; }}
+            .btn-login {{ background: var(--accent-cyan); color: #000; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-weight: bold; font-size: 0.85rem; }}
             @media (max-width: 768px) {{
                 body {{ flex-direction: column; }}
                 .sidebar {{ width: 100%; padding: 15px; border-right: none; border-bottom: 1px solid var(--border); }}
@@ -301,8 +342,8 @@ def home():
 
         <main class="main-content">
             <div class="top-bar">
-                <h2>Live High-Fi Terminal ({TRADE_MODE} Mode) - ₹500 Capital</h2>
-                <div class="status-badge"><i class="fa-solid fa-clock"></i> TODAY'S TRADES: {today_count}/2 | 9:30 AM START</div>
+                <h2>Live Terminal ({TRADE_MODE} Mode) - ₹500 Capital</h2>
+                <a href="/login" target="_blank" class="btn-login"><i class="fa-solid fa-key"></i> LOGIN TO UPSTOX</a>
             </div>
 
             <div class="stats-grid">
