@@ -18,7 +18,20 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 UPSTOX_API_KEY = os.getenv("UPSTOX_API_KEY", "1rynwakgli")
 UPSTOX_API_SECRET = os.getenv("UPSTOX_API_SECRET")
-UPSTOX_ACCESS_TOKEN = os.getenv("UPSTOX_ACCESS_TOKEN")
+
+TOKEN_FILE = "token_store.json"
+
+def load_saved_token():
+    if os.path.exists(TOKEN_FILE):
+        try:
+            with open(TOKEN_FILE, "r") as f:
+                data = json.load(f)
+                return data.get("access_token")
+        except:
+            return None
+    return os.getenv("UPSTOX_ACCESS_TOKEN")
+
+UPSTOX_ACCESS_TOKEN = load_saved_token()
 
 LOG_FILE = "trade_history.json"
 TRADE_MODE = os.getenv("TRADE_MODE", "REAL").upper()  
@@ -49,7 +62,7 @@ def send_telegram(message):
         except Exception as e:
             logging.error(f"Telegram Error: {e}")
 
-# 🔐 UPSTOX AUTHENTICATION ROUTES (Render IP Binding Solution)
+# 🔐 UPSTOX AUTHENTICATION ROUTES
 @app.route('/login')
 def upstox_login():
     redirect_uri = f"{SERVER_URL}/upstox-callback"
@@ -62,7 +75,6 @@ def upstox_callback():
     if not code:
         return "Authorization Code missing!", 400
     
-    # Render server directly exchanges the code for Token using its own IP
     url = 'https://api.upstox.com/v2/login/authorization/token'
     headers = {'accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded'}
     data = {
@@ -80,8 +92,13 @@ def upstox_callback():
             token = res_data['access_token']
             global UPSTOX_ACCESS_TOKEN
             UPSTOX_ACCESS_TOKEN = token
-            send_telegram(f"✅ *Upstox Login Successful!*\nNew Token bound to Render IP.\n\n`{token}`")
-            return f"<h2>✅ Upstox Login Successful!</h2><p>New Access Token has been generated via Render Server IP and sent to Telegram.</p><p>Token: {token}</p>"
+            
+            # Save token to file for persistence across server restarts
+            with open(TOKEN_FILE, "w") as f:
+                json.dump({"access_token": token}, f)
+                
+            send_telegram(f"✅ *Upstox Login Successful!*\nNew Token saved and bound to Render.\n\n`{token}`")
+            return f"<h2>✅ Upstox Login Successful!</h2><p>New Access Token generated & saved automatically.</p>"
         else:
             return f"❌ Token Generation Failed: {res_data}", 400
     except Exception as e:
